@@ -76,6 +76,16 @@ papermind configure --show
 papermind configure --reset
 ```
 
+### Configure Obsidian Vault (Optional)
+
+If you want to use Obsidian sync features, configure your vault path:
+
+```bash
+papermind configure --obsidian-vault /path/to/vault
+```
+
+Or use interactive mode and it will prompt you to configure it.
+
 ## Configuration Storage
 
 Configuration is stored in:
@@ -243,6 +253,177 @@ Papermind supports several types of analysis:
 - **methodology** - Focus on research methods and experimental design
 - **citation_analysis** - Analysis of citations and related work
 
+## Obsidian Sync
+
+Papermind includes powerful bidirectional sync between Zotero and Obsidian, allowing you to manage your research library in Obsidian with dynamic Dataview queries.
+
+### Prerequisites
+
+1. **Obsidian vault** - Create or use an existing Obsidian vault
+2. **Dataview plugin** - Install the Dataview community plugin in Obsidian
+   - Settings → Community plugins → Browse → Search "Dataview" → Install → Enable
+
+### Sync Zotero to Obsidian
+
+Sync your entire Zotero library to Obsidian:
+
+```bash
+# Sync all papers and collections
+papermind sync
+
+# Preview what will be synced (dry run)
+papermind sync --dry-run
+
+# Sync to a specific vault
+papermind sync --vault-path /path/to/vault
+```
+
+#### What Gets Synced
+
+The sync creates the following structure in your Obsidian vault:
+
+```
+Obsidian Vault/
+└── Zotero/
+    ├── repo/                    # All papers
+    │   ├── PAPERKEY1/
+    │   │   ├── paper.md        # Metadata with frontmatter
+    │   │   ├── Paper.pdf       # PDF attachment
+    │   │   ├── file.html       # Other attachments
+    │   │   └── Note.md         # Zotero notes
+    │   └── PAPERKEY2/
+    │       └── ...
+    └── collections/             # Collection views
+        ├── Machine Learning.md
+        └── Neural Networks.md
+```
+
+#### Paper Metadata
+
+Each `paper.md` file contains:
+
+```yaml
+---
+title: "Paper Title"
+authors:
+  - "Author 1"
+  - "Author 2"
+collections:
+  - "Machine Learning"
+  - "AI"
+year: 2024
+doi: "10.1234/..."
+url: "https://..."
+tags:
+  - "tag1"
+  - "tag2"
+zotero_id: 12345
+zotero_key: "ABC123"
+---
+
+## Abstract
+
+[Paper abstract here]
+
+## Attachments
+
+- [[Paper.pdf]]
+- [[file.html]]
+
+## Notes
+
+*Add your notes here. Use Claude CLI to generate reports.*
+```
+
+#### Collection Views
+
+Each collection file uses Dataview queries to dynamically list papers:
+
+```markdown
+# Machine Learning
+
+​```dataview
+TABLE
+  file.link as Paper,
+  title as Title
+FROM "Zotero/repo"
+WHERE contains(collections, "Machine Learning")
+SORT title ASC
+​```
+
+*20 papers in this collection*
+```
+
+### Sync Notes from Obsidian to Zotero
+
+After creating analysis reports or notes in Obsidian, sync them back to Zotero:
+
+```bash
+# Sync all new notes to Zotero
+papermind sync-notes
+
+# Preview what will be synced
+papermind sync-notes --dry-run
+
+# Overwrite existing notes in Zotero
+papermind sync-notes --overwrite
+```
+
+#### How It Works
+
+1. Creates reports in Obsidian (e.g., using Claude CLI)
+2. Saves them as `.md` files in paper directories
+3. Runs `papermind sync-notes` to sync back to Zotero
+4. Notes appear in Zotero items
+
+**Note Handling:**
+- Only `.md` files (excluding `paper.md`) are synced as notes
+- Notes are identified by filename
+- Duplicate detection prevents re-syncing unchanged notes
+- Use `--overwrite` to update existing notes
+
+### Obsidian + Claude CLI Workflow
+
+Recommended workflow for using Claude CLI with Papermind:
+
+```bash
+# 1. Sync Zotero library to Obsidian
+papermind sync
+
+# 2. Navigate to a paper directory in your vault
+cd ~/ObsidianVault/Zotero/repo/ABC123/
+
+# 3. Use Claude CLI to generate analysis
+claude "analyze this paper and create a comprehensive summary" > analysis.md
+
+# 4. Sync the analysis back to Zotero
+papermind sync-notes
+
+# 5. Open Zotero to see the analysis as a note!
+```
+
+### Use Cases
+
+**Research Organization:**
+- Browse papers in Obsidian with Dataview queries
+- Click paper links to view metadata and attachments
+- Use collections to organize by topic
+
+**Literature Review:**
+- Use Dataview to filter papers by year, author, or tags
+- Create custom queries for your research questions
+- Link between papers using wiki-links
+
+**Note-Taking:**
+- Add notes directly in `paper.md` files
+- Create separate `.md` files for detailed analysis
+- Sync notes back to Zotero for backup
+
+**AI-Assisted Analysis:**
+- Use Claude CLI to generate reports
+- Save reports as markdown files
+- Sync to Zotero as permanent notes
+
 ## Examples
 
 ### Getting Started Workflow
@@ -357,6 +538,28 @@ The paper must have an attached PDF file. Add PDFs to your Zotero items first.
 - You can set it via environment variable: `export ANTHROPIC_API_KEY=sk-ant-...`
 - Or configure it: `papermind configure --api-key sk-ant-...`
 
+### Obsidian Sync Issues
+
+**"No Zotero/repo directory found in vault"**
+
+Run `papermind sync` first to create the directory structure.
+
+**Dataview queries not showing papers**
+
+1. Make sure the Dataview plugin is installed and enabled
+2. Switch to Reading Mode (Cmd+E) to see rendered tables
+3. Check that papers have the collection in their frontmatter
+
+**Notes not visible in Obsidian**
+
+- Only `.md` files are visible in Obsidian
+- Check that notes were synced with `papermind sync`
+- Zotero notes are stripped of HTML and saved as `.md` files
+
+**Sync conflicts with Dropbox/iCloud**
+
+The sync is designed to work with cloud storage like Dropbox. Each sync recreates the structure, so conflicts should be minimal.
+
 ## Tips
 
 1. **Use Interactive Mode**: The `papermind select` command is the easiest way to get started
@@ -380,4 +583,6 @@ papermind list --help
 papermind show --help
 papermind analyze --help
 papermind batch --help
+papermind sync --help
+papermind sync-notes --help
 ```

@@ -10,6 +10,8 @@ Papermind integrates Anthropic's Claude AI with your Zotero library to provide i
 - Extract text from PDFs automatically
 - Analyze papers using Claude AI with multiple analysis types
 - **Write analysis results back to Zotero as notes**
+- **Sync your entire Zotero library to Obsidian vault**
+- **Bidirectional sync between Obsidian and Zotero**
 - Support batch processing of multiple papers
 - Generate reports in multiple formats
 
@@ -17,6 +19,7 @@ Papermind integrates Anthropic's Claude AI with your Zotero library to provide i
 
 ✅ **Claude Integration**: Leverage Claude's 200k context window for deep paper analysis
 ✅ **Zotero Integration**: Direct read/write access to your Zotero database
+✅ **Obsidian Sync**: Bidirectional sync between Zotero and Obsidian with Dataview support
 ✅ **Note Writing**: Save AI analysis directly as notes in Zotero entries
 ✅ **Multiple Analysis Types**: Comprehensive, quick summary, technical deep dive, literature review, methodology, citation analysis
 ✅ **PDF Extraction**: Automatic text extraction from PDF files
@@ -70,6 +73,7 @@ papermind configure
 This will prompt you for:
 - Zotero data directory path
 - Claude API key (or use `ANTHROPIC_API_KEY` environment variable)
+- Obsidian vault path (optional, for sync features)
 
 Configuration is saved to `~/.papermind/config.json` for future use.
 
@@ -117,6 +121,7 @@ See the full documentation in [USAGE.md](USAGE.md) for detailed command referenc
 papermind configure                    # Interactive setup
 papermind configure --show             # Show current config
 papermind configure --reset            # Reset configuration
+papermind configure --obsidian-vault /path/to/vault  # Set Obsidian vault
 
 # Interactive mode (easiest!)
 papermind select                       # Guided selection of collection -> paper -> analysis type
@@ -136,6 +141,12 @@ papermind analyze 12345 --type technical_deep_dive --output report.md
 
 # Batch processing
 papermind batch --collection "To Read" --type quick_summary
+
+# Obsidian sync
+papermind sync                         # Sync Zotero → Obsidian
+papermind sync --dry-run               # Preview sync without changes
+papermind sync-notes                   # Sync Obsidian notes → Zotero
+papermind sync-notes --overwrite       # Update existing notes in Zotero
 ```
 
 ## Requirements
