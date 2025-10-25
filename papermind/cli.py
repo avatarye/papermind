@@ -9,6 +9,7 @@ from pathlib import Path
 
 from papermind.claude import ClaudeClient, PromptType
 from papermind.zotero import ZoteroDatabase
+from papermind.obsidian import sync_to_obsidian, sync_notes_to_zotero
 from papermind.config import get_config
 
 # Fix Unicode encoding for Windows
@@ -139,6 +140,11 @@ def main():
     help='Claude API key (or set ANTHROPIC_API_KEY env var)',
 )
 @click.option(
+    '--obsidian-vault',
+    type=click.Path(exists=True),
+    help='Path to Obsidian vault directory',
+)
+@click.option(
     '--show',
     is_flag=True,
     help='Show current configuration',
@@ -148,16 +154,17 @@ def main():
     is_flag=True,
     help='Reset configuration',
 )
-def configure(zotero_path, api_key, show, reset):
+def configure(zotero_path, api_key, obsidian_vault, show, reset):
     """
     Configure Papermind settings.
 
-    Stores Zotero path and Claude API key for future use.
+    Stores Zotero path, Claude API key, and Obsidian vault path for future use.
 
     Examples:
         papermind configure
         papermind configure --zotero-path /path/to/zotero
         papermind configure --api-key sk-ant-...
+        papermind configure --obsidian-vault /path/to/vault
         papermind configure --show
         papermind configure --reset
     """
@@ -168,6 +175,7 @@ def configure(zotero_path, api_key, show, reset):
         console.print("[bold blue]Current Configuration[/bold blue]\n")
         zotero = config.get_zotero_path()
         api = config.get_api_key()
+        vault = config.get_obsidian_vault_path()
 
         if zotero:
             console.print(f"[green]✓[/green] Zotero path: {zotero}")
@@ -179,6 +187,11 @@ def configure(zotero_path, api_key, show, reset):
             console.print(f"[green]✓[/green] Claude API key: {masked_key}")
         else:
             console.print("[yellow]✗[/yellow] Claude API key: Not configured")
+
+        if vault:
+            console.print(f"[green]✓[/green] Obsidian vault: {vault}")
+        else:
+            console.print("[yellow]✗[/yellow] Obsidian vault: Not configured")
 
         console.print(f"\nConfig file: {config.config_file}")
         return
@@ -254,6 +267,37 @@ def configure(zotero_path, api_key, show, reset):
                 try:
                     config.set_api_key(new_key)
                     console.print(f"[green]✓[/green] API key configured")
+                except ValueError as e:
+                    console.print(f"[red]✗ Error:[/red] {e}")
+                    sys.exit(1)
+
+    # Configure Obsidian vault path
+    if obsidian_vault:
+        try:
+            config.set_obsidian_vault_path(obsidian_vault)
+            console.print(f"[green]✓[/green] Obsidian vault path set to: {obsidian_vault}")
+        except ValueError as e:
+            console.print(f"[red]✗ Error:[/red] {e}")
+            sys.exit(1)
+    else:
+        current = config.get_obsidian_vault_path()
+        if current:
+            console.print(f"Current Obsidian vault path: {current}")
+            if Prompt.ask("Update Obsidian vault path?", choices=["y", "n"], default="n") == "y":
+                new_path = Prompt.ask("Enter new Obsidian vault directory path")
+                try:
+                    config.set_obsidian_vault_path(new_path)
+                    console.print(f"[green]✓[/green] Obsidian vault path updated")
+                except ValueError as e:
+                    console.print(f"[red]✗ Error:[/red] {e}")
+                    sys.exit(1)
+        else:
+            console.print("[yellow]Obsidian vault path not configured (optional)[/yellow]")
+            if Prompt.ask("Configure now?", choices=["y", "n"], default="n") == "y":
+                new_path = Prompt.ask("Enter Obsidian vault directory path")
+                try:
+                    config.set_obsidian_vault_path(new_path)
+                    console.print(f"[green]✓[/green] Obsidian vault path set")
                 except ValueError as e:
                     console.print(f"[red]✗ Error:[/red] {e}")
                     sys.exit(1)
@@ -741,6 +785,177 @@ def batch(collection, tag, limit, analysis_type):
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    '--vault-path',
+    type=click.Path(exists=True),
+    help='Path to Obsidian vault (or configure with: papermind configure)',
+)
+@click.option(
+    '--dry-run',
+    is_flag=True,
+    help='Show what would be synced without making changes',
+)
+def sync(vault_path, dry_run):
+    """
+    Sync Zotero library to Obsidian vault.
+
+    Creates a structured Obsidian vault with:
+    - zotero/{item_key}/paper.md - Papers with frontmatter metadata
+    - zotero/{item_key}/*.pdf - PDF attachments
+    - collections/{collection_name}.md - Dataview query files
+
+    The sync uses Dataview queries for dynamic collection views.
+    Make sure you have the Dataview plugin installed in Obsidian.
+
+    Examples:
+        papermind sync
+        papermind sync --vault-path /path/to/vault
+        papermind sync --dry-run
+    """
+    zotero_path, _ = require_configuration()
+
+    config = get_config()
+
+    # Determine vault path
+    if not vault_path:
+        vault_path = config.get_obsidian_vault_path()
+
+    if not vault_path:
+        console.print("[yellow]Obsidian vault path not configured.[/yellow]")
+        console.print("Please either:")
+        console.print("  1. Run: [cyan]papermind configure[/cyan] to set the vault path")
+        console.print("  2. Use: [cyan]papermind sync --vault-path /path/to/vault[/cyan]")
+        sys.exit(1)
+
+    try:
+        db = ZoteroDatabase(zotero_path)
+
+        if dry_run:
+            console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
+
+        console.print(f"[blue]Syncing Zotero library to Obsidian vault...[/blue]")
+        console.print(f"[blue]Vault: {vault_path}[/blue]\n")
+
+        # Perform sync
+        stats = sync_to_obsidian(db, vault_path, dry_run=dry_run)
+
+        # Display results
+        console.print("\n" + "="*70)
+        console.print("[bold green]Sync Complete[/bold green]")
+        console.print("="*70)
+        console.print(f"[green]✓[/green] Papers synced: {stats['papers_synced']}")
+        console.print(f"[green]✓[/green] Files copied: {stats['files_copied']}")
+        console.print(f"[green]✓[/green] Collections created: {stats['collections_created']}")
+
+        if stats['errors']:
+            console.print(f"\n[yellow]⚠ Errors encountered: {len(stats['errors'])}[/yellow]")
+            for error in stats['errors'][:5]:  # Show first 5 errors
+                console.print(f"  [red]•[/red] {error}")
+            if len(stats['errors']) > 5:
+                console.print(f"  [dim]... and {len(stats['errors']) - 5} more[/dim]")
+
+        console.print("="*70)
+
+        if not dry_run:
+            console.print("\n[green]Your Zotero library has been synced to Obsidian![/green]")
+            console.print("[dim]Make sure you have the Dataview plugin installed in Obsidian.[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    '--vault-path',
+    type=click.Path(exists=True),
+    help='Path to Obsidian vault (or configure with: papermind configure)',
+)
+@click.option(
+    '--dry-run',
+    is_flag=True,
+    help='Show what would be synced without making changes',
+)
+@click.option(
+    '--overwrite',
+    is_flag=True,
+    help='Overwrite existing notes with same title in Zotero',
+)
+def sync_notes(vault_path, dry_run, overwrite):
+    """
+    Sync notes/reports from Obsidian back to Zotero.
+
+    Scans zotero/{item_key}/ directories for .md files (excluding paper.md)
+    and saves them as notes in Zotero. This allows you to:
+
+    1. Use Claude CLI to generate reports in paper directories
+    2. Sync those reports back to Zotero as notes
+
+    Notes are identified by their filename. If a note with the same title
+    already exists in Zotero, it will be skipped unless --overwrite is used.
+
+    Examples:
+        papermind sync-notes
+        papermind sync-notes --vault-path /path/to/vault
+        papermind sync-notes --dry-run
+        papermind sync-notes --overwrite
+    """
+    zotero_path, _ = require_configuration()
+
+    config = get_config()
+
+    # Determine vault path
+    if not vault_path:
+        vault_path = config.get_obsidian_vault_path()
+
+    if not vault_path:
+        console.print("[yellow]Obsidian vault path not configured.[/yellow]")
+        console.print("Please either:")
+        console.print("  1. Run: [cyan]papermind configure[/cyan] to set the vault path")
+        console.print("  2. Use: [cyan]papermind sync-notes --vault-path /path/to/vault[/cyan]")
+        sys.exit(1)
+
+    try:
+        db = ZoteroDatabase(zotero_path)
+
+        if dry_run:
+            console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
+
+        console.print(f"[blue]Syncing notes from Obsidian to Zotero...[/blue]")
+        console.print(f"[blue]Vault: {vault_path}[/blue]\n")
+
+        # Perform sync
+        stats = sync_notes_to_zotero(db, vault_path, dry_run=dry_run, overwrite=overwrite)
+
+        # Display results
+        console.print("\n" + "="*70)
+        console.print("[bold green]Sync Complete[/bold green]")
+        console.print("="*70)
+        console.print(f"[green]✓[/green] Notes synced: {stats['notes_synced']}")
+        console.print(f"[yellow]⊘[/yellow] Notes skipped: {stats['notes_skipped']}")
+
+        if stats['errors']:
+            console.print(f"\n[yellow]⚠ Errors encountered: {len(stats['errors'])}[/yellow]")
+            for error in stats['errors'][:5]:  # Show first 5 errors
+                console.print(f"  [red]•[/red] {error}")
+            if len(stats['errors']) > 5:
+                console.print(f"  [dim]... and {len(stats['errors']) - 5} more[/dim]")
+
+        console.print("="*70)
+
+        if not dry_run and stats['notes_synced'] > 0:
+            console.print("\n[green]Your notes have been synced to Zotero![/green]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 

@@ -42,6 +42,21 @@ class Config:
         """Check if basic configuration exists."""
         return bool(self.get_zotero_path() and self.get_api_key())
 
+    def get_obsidian_vault_path(self) -> Optional[str]:
+        """Get configured Obsidian vault path."""
+        return self._config.get('obsidian_vault_path')
+
+    def set_obsidian_vault_path(self, path: str) -> None:
+        """Set Obsidian vault path."""
+        # Validate path exists
+        if not Path(path).exists():
+            raise ValueError(f"Path does not exist: {path}")
+        if not Path(path).is_dir():
+            raise ValueError(f"Path is not a directory: {path}")
+
+        self._config['obsidian_vault_path'] = str(path)
+        self._save()
+
     def get_zotero_path(self) -> Optional[str]:
         """Get configured Zotero path."""
         return self._config.get('zotero_path')

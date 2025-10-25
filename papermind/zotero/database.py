@@ -155,6 +155,10 @@ class ZoteroDatabase:
             item_data = dict(row)
             # Get additional metadata
             item_data.update(self._get_item_metadata(cursor, row['itemID']))
+            # Get PDF path (for backwards compatibility)
+            item_data['pdf_path'] = self._get_pdf_path(cursor, row['itemID'])
+            # Get all attachments
+            item_data['attachments'] = self._get_all_attachments(cursor, row['itemID'])
             items.append(item_data)
 
         conn.close()
@@ -273,6 +277,49 @@ class ZoteroDatabase:
                 return str(pdf_files[0])
 
         return None
+
+    def _get_all_attachments(self, cursor, item_id: int) -> List[Dict[str, Any]]:
+        """Get all attachments for an item."""
+        cursor.execute("""
+            SELECT
+                ia.itemID,
+                ia.path,
+                ia.contentType,
+                i.key
+            FROM itemAttachments ia
+            JOIN items i ON ia.itemID = i.itemID
+            WHERE ia.parentItemID = ?
+                AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+        """, (item_id,))
+
+        attachments = []
+        for row in cursor.fetchall():
+            file_path = None
+
+            # Check explicit path
+            if row['path']:
+                path_obj = Path(row['path'])
+                if path_obj.exists():
+                    file_path = str(path_obj)
+
+            # Try storage directory
+            if not file_path:
+                storage_dir = self.storage_path / row['key']
+                if storage_dir.exists():
+                    # Find all files in storage directory
+                    files = list(storage_dir.glob("*"))
+                    if files:
+                        file_path = str(files[0])
+
+            if file_path:
+                attachments.append({
+                    'item_id': row['itemID'],
+                    'path': file_path,
+                    'content_type': row['contentType'],
+                    'key': row['key']
+                })
+
+        return attachments
 
     def add_note(
         self,
