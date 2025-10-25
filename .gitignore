@@ -173,7 +173,11 @@ cython_debug/
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+.idea/
+*.iml
+*.iws
+*.ipr
+.idea_modules/
 
 # Abstra
 # Abstra is an AI-powered process automation framework.
@@ -182,11 +186,16 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#  and can be added to the global gitignore or merged into this file. However, if you prefer,
 #  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
+*.code-workspace
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
 
 # Ruff stuff:
 .ruff_cache/
@@ -205,3 +214,97 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ============================================================================
+# OS-specific files
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================================
+# Papermind-specific
+# ============================================================================
+
+# User configuration and cache
+.papermind/
+
+# API keys and secrets (NEVER commit these!)
+*.key
+secrets.yaml
+secrets.json
+.secrets/
+config.local.yaml
+
+# Test output and reports
+test_output/
+reports/
+*.report.md
+*.report.json
+*.report.html
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Logs
+logs/
+
+# Zotero databases (should not be committed)
+# Note: Users configure path to their Zotero library, don't commit test databases
+zotero.sqlite
+zotero.sqlite-journal
+
+# Sample/test PDFs (papers should not be committed)
+*.pdf
+!docs/*.pdf  # Allow documentation PDFs if needed
+
+# Backup files
+*.bak
+*.backup
+*-old
+*-backup
+
+# Development cache
+.cache/
+*.cache

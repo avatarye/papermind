@@ -1,0 +1,4 @@
+include README.md
+include USAGE.md
+include LICENSE
+recursive-include papermind *.py
