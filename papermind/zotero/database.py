@@ -2,9 +2,71 @@
 
 import sqlite3
 import os
+import time
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable, TypeVar
 from datetime import datetime
+from functools import wraps
+from contextlib import contextmanager
+
+T = TypeVar('T')
+
+
+class ZoteroDatabaseLockError(Exception):
+    """Exception raised when the Zotero database is locked."""
+    pass
+
+
+def retry_on_lock(max_retries: int = 5, initial_delay: float = 0.1, backoff_factor: float = 2.0):
+    """
+    Decorator to retry database operations on lock errors.
+
+    Args:
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds before first retry
+        backoff_factor: Multiplier for delay between retries (exponential backoff)
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            delay = initial_delay
+            last_error = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except sqlite3.OperationalError as e:
+                    last_error = e
+                    error_msg = str(e).lower()
+
+                    # Check if it's a database lock error
+                    if 'locked' in error_msg or 'busy' in error_msg:
+                        if attempt < max_retries:
+                            # Wait before retrying
+                            time.sleep(delay)
+                            delay *= backoff_factor
+                            continue
+                        else:
+                            # Max retries reached
+                            raise ZoteroDatabaseLockError(
+                                "The Zotero database is locked. Please close Zotero and try again.\n"
+                                f"If Zotero is already closed, wait a moment and retry.\n"
+                                f"Original error: {e}"
+                            ) from e
+                    else:
+                        # Not a lock error, re-raise immediately
+                        raise
+                except Exception:
+                    # Other exceptions, re-raise immediately
+                    raise
+
+            # Should never reach here, but just in case
+            if last_error:
+                raise last_error
+            return func(*args, **kwargs)
+
+        return wrapper
+    return decorator
 
 
 class ZoteroDatabase:
@@ -64,19 +126,75 @@ class ZoteroDatabase:
         # If not found, try the first default
         return str(possible_paths[0])
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get a read-only database connection."""
+    def _get_connection(self, timeout: float = 10.0) -> sqlite3.Connection:
+        """
+        Get a read-only database connection.
+
+        Args:
+            timeout: Timeout in seconds for database lock (default: 10.0)
+
+        Returns:
+            SQLite connection with read-only access
+        """
         # Use URI mode for read-only access (safer when Zotero might be running)
-        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(
+            f"file:{self.db_path}?mode=ro",
+            uri=True,
+            timeout=timeout
+        )
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _get_write_connection(self) -> sqlite3.Connection:
-        """Get a writable database connection."""
-        conn = sqlite3.connect(self.db_path)
+    def _get_write_connection(self, timeout: float = 10.0) -> sqlite3.Connection:
+        """
+        Get a writable database connection.
+
+        Args:
+            timeout: Timeout in seconds for database lock (default: 10.0)
+
+        Returns:
+            SQLite connection with write access
+        """
+        conn = sqlite3.connect(self.db_path, timeout=timeout)
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def _connection_context(self, readonly: bool = True, timeout: float = 10.0):
+        """
+        Context manager for database connections.
+
+        Ensures connections are properly closed even if an error occurs.
+
+        Args:
+            readonly: If True, use read-only connection; otherwise use write connection
+            timeout: Timeout in seconds for database lock
+
+        Yields:
+            Tuple of (connection, cursor)
+
+        Example:
+            with self._connection_context() as (conn, cursor):
+                cursor.execute("SELECT * FROM items")
+                results = cursor.fetchall()
+        """
+        conn = None
+        try:
+            if readonly:
+                conn = self._get_connection(timeout=timeout)
+            else:
+                conn = self._get_write_connection(timeout=timeout)
+            cursor = conn.cursor()
+            yield conn, cursor
+        except Exception:
+            if conn and not readonly:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+
+    @retry_on_lock(max_retries=5, initial_delay=0.1, backoff_factor=2.0)
     def list_items(
         self,
         collection: Optional[str] = None,
@@ -94,76 +212,74 @@ class ZoteroDatabase:
         Returns:
             List of item dictionaries with metadata
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        query = """
-            SELECT DISTINCT
-                i.itemID,
-                i.key,
-                iv.value AS title,
-                i.dateAdded,
-                i.dateModified
-            FROM items i
-            JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
-            LEFT JOIN itemData id ON i.itemID = id.itemID
-            LEFT JOIN fields f ON id.fieldID = f.fieldID
-            LEFT JOIN itemDataValues iv ON id.valueID = iv.valueID
-            WHERE i.itemID NOT IN (SELECT itemID FROM deletedItems)
-                AND f.fieldName = 'title'
-                AND it.typeName NOT IN ('attachment', 'note')
-                AND i.itemID NOT IN (
-                    SELECT itemID FROM itemAttachments
-                    UNION
-                    SELECT itemID FROM itemNotes WHERE parentItemID IS NOT NULL
-                )
-        """
-
-        params = []
-
-        # Filter by collection
-        if collection:
-            query += """
-                AND i.itemID IN (
-                    SELECT itemID FROM collectionItems ci
-                    JOIN collections c ON ci.collectionID = c.collectionID
-                    WHERE c.collectionName = ?
-                )
+        with self._connection_context(readonly=True) as (conn, cursor):
+            query = """
+                SELECT DISTINCT
+                    i.itemID,
+                    i.key,
+                    iv.value AS title,
+                    i.dateAdded,
+                    i.dateModified
+                FROM items i
+                JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+                LEFT JOIN itemData id ON i.itemID = id.itemID
+                LEFT JOIN fields f ON id.fieldID = f.fieldID
+                LEFT JOIN itemDataValues iv ON id.valueID = iv.valueID
+                WHERE i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                    AND f.fieldName = 'title'
+                    AND it.typeName NOT IN ('attachment', 'note')
+                    AND i.itemID NOT IN (
+                        SELECT itemID FROM itemAttachments
+                        UNION
+                        SELECT itemID FROM itemNotes WHERE parentItemID IS NOT NULL
+                    )
             """
-            params.append(collection)
 
-        # Filter by tags
-        if tags:
-            for tag in tags:
+            params = []
+
+            # Filter by collection
+            if collection:
                 query += """
                     AND i.itemID IN (
-                        SELECT itemID FROM itemTags it
-                        JOIN tags t ON it.tagID = t.tagID
-                        WHERE t.name = ?
+                        SELECT itemID FROM collectionItems ci
+                        JOIN collections c ON ci.collectionID = c.collectionID
+                        WHERE c.collectionName = ?
                     )
                 """
-                params.append(tag)
+                params.append(collection)
 
-        query += " ORDER BY i.dateModified DESC LIMIT ?"
-        params.append(limit)
+            # Filter by tags
+            if tags:
+                for tag in tags:
+                    query += """
+                        AND i.itemID IN (
+                            SELECT itemID FROM itemTags it
+                            JOIN tags t ON it.tagID = t.tagID
+                            WHERE t.name = ?
+                        )
+                    """
+                    params.append(tag)
 
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+            query += " ORDER BY i.dateModified DESC LIMIT ?"
+            params.append(limit)
 
-        items = []
-        for row in rows:
-            item_data = dict(row)
-            # Get additional metadata
-            item_data.update(self._get_item_metadata(cursor, row['itemID']))
-            # Get PDF path (for backwards compatibility)
-            item_data['pdf_path'] = self._get_pdf_path(cursor, row['itemID'])
-            # Get all attachments
-            item_data['attachments'] = self._get_all_attachments(cursor, row['itemID'])
-            items.append(item_data)
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
 
-        conn.close()
-        return items
+            items = []
+            for row in rows:
+                item_data = dict(row)
+                # Get additional metadata
+                item_data.update(self._get_item_metadata(cursor, row['itemID']))
+                # Get PDF path (for backwards compatibility)
+                item_data['pdf_path'] = self._get_pdf_path(cursor, row['itemID'])
+                # Get all attachments
+                item_data['attachments'] = self._get_all_attachments(cursor, row['itemID'])
+                items.append(item_data)
 
+            return items
+
+    @retry_on_lock(max_retries=5, initial_delay=0.1, backoff_factor=2.0)
     def get_item(self, item_id: int) -> Optional[Dict[str, Any]]:
         """
         Get detailed information about a specific item.
@@ -174,30 +290,26 @@ class ZoteroDatabase:
         Returns:
             Dictionary with item metadata, or None if not found
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._connection_context(readonly=True) as (conn, cursor):
+            cursor.execute("""
+                SELECT itemID, key, dateAdded, dateModified
+                FROM items
+                WHERE itemID = ? AND itemID NOT IN (SELECT itemID FROM deletedItems)
+            """, (item_id,))
 
-        cursor.execute("""
-            SELECT itemID, key, dateAdded, dateModified
-            FROM items
-            WHERE itemID = ? AND itemID NOT IN (SELECT itemID FROM deletedItems)
-        """, (item_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
 
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
-            return None
+            item = dict(row)
+            item.update(self._get_item_metadata(cursor, item_id))
 
-        item = dict(row)
-        item.update(self._get_item_metadata(cursor, item_id))
+            # Get PDF path
+            pdf_path = self._get_pdf_path(cursor, item_id)
+            if pdf_path:
+                item['pdf_path'] = pdf_path
 
-        # Get PDF path
-        pdf_path = self._get_pdf_path(cursor, item_id)
-        if pdf_path:
-            item['pdf_path'] = pdf_path
-
-        conn.close()
-        return item
+            return item
 
     def _get_item_metadata(self, cursor, item_id: int) -> Dict[str, Any]:
         """Get all metadata fields for an item."""
@@ -321,6 +433,7 @@ class ZoteroDatabase:
 
         return attachments
 
+    @retry_on_lock(max_retries=5, initial_delay=0.1, backoff_factor=2.0)
     def add_note(
         self,
         parent_item_id: int,
@@ -339,69 +452,63 @@ class ZoteroDatabase:
             The itemID of the created note
 
         Raises:
+            ZoteroDatabaseLockError: If database is locked after retries
             sqlite3.Error: If database write fails
             ValueError: If parent item doesn't exist
         """
-        # Verify parent item exists
-        conn = self._get_write_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT itemID, libraryID FROM items
-            WHERE itemID = ? AND itemID NOT IN (SELECT itemID FROM deletedItems)
-        """, (parent_item_id,))
-
-        parent_row = cursor.fetchone()
-        if not parent_row:
-            conn.close()
-            raise ValueError(f"Parent item {parent_item_id} not found")
-
-        library_id = parent_row['libraryID']
-
-        try:
-            # Get the note item type ID
-            cursor.execute("SELECT itemTypeID FROM itemTypes WHERE typeName = 'note'")
-            note_type_id = cursor.fetchone()['itemTypeID']
-
-            # Generate a unique key for the note
-            import hashlib
-            import time
-            key = hashlib.md5(f"{parent_item_id}{time.time()}".encode()).hexdigest()[:8].upper()
-
-            # Insert the note item
+        with self._connection_context(readonly=False) as (conn, cursor):
+            # Verify parent item exists
             cursor.execute("""
-                INSERT INTO items (itemTypeID, libraryID, dateAdded, dateModified, key)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                note_type_id,
-                library_id,
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                key
-            ))
+                SELECT itemID, libraryID FROM items
+                WHERE itemID = ? AND itemID NOT IN (SELECT itemID FROM deletedItems)
+            """, (parent_item_id,))
 
-            note_item_id = cursor.lastrowid
+            parent_row = cursor.fetchone()
+            if not parent_row:
+                raise ValueError(f"Parent item {parent_item_id} not found")
 
-            # Format note as pure text with title on first line
-            title = note_title or 'AI Analysis'
-            text_content = f"{title}\n\n{note_content}"
+            library_id = parent_row['libraryID']
 
-            # Insert the note content
-            cursor.execute("""
-                INSERT INTO itemNotes (itemID, parentItemID, note)
-                VALUES (?, ?, ?)
-            """, (note_item_id, parent_item_id, text_content))
+            try:
+                # Get the note item type ID
+                cursor.execute("SELECT itemTypeID FROM itemTypes WHERE typeName = 'note'")
+                note_type_id = cursor.fetchone()['itemTypeID']
 
-            conn.commit()
-            conn.close()
+                # Generate a unique key for the note
+                import hashlib
+                key = hashlib.md5(f"{parent_item_id}{time.time()}".encode()).hexdigest()[:8].upper()
 
-            return note_item_id
+                # Insert the note item
+                cursor.execute("""
+                    INSERT INTO items (itemTypeID, libraryID, dateAdded, dateModified, key)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    note_type_id,
+                    library_id,
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    key
+                ))
 
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            raise sqlite3.Error(f"Failed to add note: {e}")
+                note_item_id = cursor.lastrowid
 
+                # Format note as pure text with title on first line
+                title = note_title or 'AI Analysis'
+                text_content = f"{title}\n\n{note_content}"
+
+                # Insert the note content
+                cursor.execute("""
+                    INSERT INTO itemNotes (itemID, parentItemID, note)
+                    VALUES (?, ?, ?)
+                """, (note_item_id, parent_item_id, text_content))
+
+                conn.commit()
+                return note_item_id
+
+            except Exception as e:
+                raise sqlite3.Error(f"Failed to add note: {e}")
+
+    @retry_on_lock(max_retries=5, initial_delay=0.1, backoff_factor=2.0)
     def get_notes(self, parent_item_id: int) -> List[Dict[str, Any]]:
         """
         Get all notes attached to an item.
@@ -412,36 +519,34 @@ class ZoteroDatabase:
         Returns:
             List of notes with their content
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._connection_context(readonly=True) as (conn, cursor):
+            cursor.execute("""
+                SELECT
+                    i.itemID,
+                    i.key,
+                    i.dateAdded,
+                    i.dateModified,
+                    n.note
+                FROM itemNotes n
+                JOIN items i ON n.itemID = i.itemID
+                WHERE n.parentItemID = ?
+                    AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                ORDER BY i.dateModified DESC
+            """, (parent_item_id,))
 
-        cursor.execute("""
-            SELECT
-                i.itemID,
-                i.key,
-                i.dateAdded,
-                i.dateModified,
-                n.note
-            FROM itemNotes n
-            JOIN items i ON n.itemID = i.itemID
-            WHERE n.parentItemID = ?
-                AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-            ORDER BY i.dateModified DESC
-        """, (parent_item_id,))
+            notes = []
+            for row in cursor.fetchall():
+                notes.append({
+                    'itemID': row['itemID'],
+                    'key': row['key'],
+                    'dateAdded': row['dateAdded'],
+                    'dateModified': row['dateModified'],
+                    'content': row['note'],
+                })
 
-        notes = []
-        for row in cursor.fetchall():
-            notes.append({
-                'itemID': row['itemID'],
-                'key': row['key'],
-                'dateAdded': row['dateAdded'],
-                'dateModified': row['dateModified'],
-                'content': row['note'],
-            })
+            return notes
 
-        conn.close()
-        return notes
-
+    @retry_on_lock(max_retries=5, initial_delay=0.1, backoff_factor=2.0)
     def search_items(self, query: str, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Search for items by text query.
@@ -453,28 +558,25 @@ class ZoteroDatabase:
         Returns:
             List of matching items
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._connection_context(readonly=True) as (conn, cursor):
+            search_pattern = f"%{query}%"
 
-        search_pattern = f"%{query}%"
+            cursor.execute("""
+                SELECT DISTINCT i.itemID
+                FROM items i
+                LEFT JOIN itemData id ON i.itemID = id.itemID
+                LEFT JOIN itemDataValues iv ON id.valueID = iv.valueID
+                LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
+                LEFT JOIN creators c ON ic.creatorID = c.creatorID
+                WHERE i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                    AND (
+                        iv.value LIKE ?
+                        OR c.firstName LIKE ?
+                        OR c.lastName LIKE ?
+                    )
+                LIMIT ?
+            """, (search_pattern, search_pattern, search_pattern, limit))
 
-        cursor.execute("""
-            SELECT DISTINCT i.itemID
-            FROM items i
-            LEFT JOIN itemData id ON i.itemID = id.itemID
-            LEFT JOIN itemDataValues iv ON id.valueID = iv.valueID
-            LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
-            LEFT JOIN creators c ON ic.creatorID = c.creatorID
-            WHERE i.itemID NOT IN (SELECT itemID FROM deletedItems)
-                AND (
-                    iv.value LIKE ?
-                    OR c.firstName LIKE ?
-                    OR c.lastName LIKE ?
-                )
-            LIMIT ?
-        """, (search_pattern, search_pattern, search_pattern, limit))
-
-        item_ids = [row['itemID'] for row in cursor.fetchall()]
-        conn.close()
+            item_ids = [row['itemID'] for row in cursor.fetchall()]
 
         return [self.get_item(item_id) for item_id in item_ids if self.get_item(item_id)]

@@ -308,3 +308,5 @@ zotero.sqlite-journal
 # Development cache
 .cache/
 *.cache
+
+uv.lock

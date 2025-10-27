@@ -9,6 +9,7 @@ from pathlib import Path
 
 from papermind.claude import ClaudeClient, PromptType
 from papermind.zotero import ZoteroDatabase
+from papermind.zotero.database import ZoteroDatabaseLockError
 from papermind.obsidian import sync_to_obsidian, sync_notes_to_zotero
 from papermind.config import get_config
 
@@ -483,6 +484,10 @@ def select(save_to_zotero, output):
         stats = client.get_usage_stats()
         console.print(f"\n[dim]Total tokens used: {stats['total_tokens']}[/dim]")
 
+    except ZoteroDatabaseLockError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("\n[yellow]Tip: Close Zotero and try again.[/yellow]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         import traceback
@@ -546,6 +551,10 @@ def list(collection, tag, limit):
 
         console.print(table)
 
+    except ZoteroDatabaseLockError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("\n[yellow]Tip: Close Zotero and try again.[/yellow]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -585,6 +594,10 @@ def show(item_id):
         if 'pdf_path' in item and item['pdf_path']:
             console.print(f"\n[bold]PDF:[/bold] {item['pdf_path']}")
 
+    except ZoteroDatabaseLockError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("\n[yellow]Tip: Close Zotero and try again.[/yellow]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -706,6 +719,10 @@ def analyze(item_id, analysis_type, save_to_zotero, output):
         stats = client.get_usage_stats()
         console.print(f"\n[dim]Total tokens used: {stats['total_tokens']}[/dim]")
 
+    except ZoteroDatabaseLockError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("\n[yellow]Tip: Close Zotero and try again.[/yellow]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         import traceback
@@ -783,6 +800,10 @@ def batch(collection, tag, limit, analysis_type):
 
         console.print("\n[green]Batch processing complete![/green]")
 
+    except ZoteroDatabaseLockError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("\n[yellow]Tip: Close Zotero and try again.[/yellow]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -864,6 +885,10 @@ def sync(vault_path, dry_run):
             console.print("\n[green]Your Zotero library has been synced to Obsidian![/green]")
             console.print("[dim]Make sure you have the Dataview plugin installed in Obsidian.[/dim]")
 
+    except ZoteroDatabaseLockError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("\n[yellow]Tip: Close Zotero and try again.[/yellow]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         import traceback
@@ -952,6 +977,10 @@ def sync_notes(vault_path, dry_run, overwrite):
         if not dry_run and stats['notes_synced'] > 0:
             console.print("\n[green]Your notes have been synced to Zotero![/green]")
 
+    except ZoteroDatabaseLockError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("\n[yellow]Tip: Close Zotero and try again.[/yellow]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         import traceback
